@@ -298,7 +298,7 @@ class PathPlanner(Node):
         # replace the very last orientation with the orientation of our
         # goal pose p1.
         #q = quaternion_from_euler(0.0, 0.0, yaw0)
-        q = quaternion_from_euler(0.0, 0.0, yaw0)#yaw0
+        q = quaternion_from_euler(0.0, 0.0, yaw1)#yaw0
         orientations = [Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
                         ] * len(points_3d)
         q = quaternion_from_euler(0.0, 0.0, yaw1)
@@ -341,10 +341,11 @@ class PathPlanner(Node):
         node_list = [p_start]
         predecessor_list = [None]
         cost_to_node_list = [0]
-        iterations = 400
+        iterations = 600
         radius = 0.3
         i=0
-        max_distance_to_goal = 0.18
+        max_distance_to_goal = 0.15
+        current_distance_to_goal = np.inf#######
         goal_reached = False
         path_list = []
         while i < iterations:
@@ -373,9 +374,11 @@ class PathPlanner(Node):
                         cost_to_node_list[node_list.index(to_be_improved)] = new_cost
                     else:
                         continue
-            if self.distance_rrt(candidate, p_finish) < max_distance_to_goal:
+            candidate_distance_to_goal = self.distance_rrt(candidate, p_finish)
+            if candidate_distance_to_goal < max_distance_to_goal and candidate_distance_to_goal< current_distance_to_goal:
                 goal_reached = True
                 goal_coordinates = candidate
+                current_distance_to_goal = candidate_distance_to_goal
             i+=1
             
         if goal_reached == False:
@@ -419,7 +422,7 @@ class PathPlanner(Node):
         # replace the very last orientation with the orientation of our
         # goal pose p1.
         #q = quaternion_from_euler(0.0, 0.0, yaw0)
-        q = quaternion_from_euler(0.0, 0.0, yaw0)#yaw0
+        q = quaternion_from_euler(0.0, 0.0, yaw1)#yaw0
         orientations = [Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
                         ] * len(points_3d)
         q = quaternion_from_euler(0.0, 0.0, yaw1)
