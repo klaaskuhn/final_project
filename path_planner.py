@@ -191,7 +191,21 @@ class PathPlanner(Node):
         p1_world = matrix_index_to_world(p1_2d[0], p1_2d[1], self.cell_size)
         d = np.sqrt((p0_world[0] - p1_world[0])**2 + (p0_world[1] - p1_world[1])**2)
         return d
-        
+
+    def find_nearest_rrt(self, p0, nodes):
+        closest_so_far = [[None, None], np.inf]
+        for node in nodes:
+            possible_distance = self.distance_rrt(p0, node)
+            if possible_distance < closest_so_far[1]:
+                closest_so_far = [node, possible_distance]
+        return closest_so_far 
+
+    def find_rrt_inbetween(self, p0, p1, d):
+        v_norm = 1/np.sqrt((p1[0] - p0[0])**2 + (p1[1] - p0[1])**2)
+        x_new = p0[0] + d * v_norm * (p1[0] - p0[0])
+        y_new = p0[1] + d * v_norm * (p1[1] - p0[1])
+        return [x_new, y_new]
+
 
     def compute_a_star_segment(self, p0: Pose, p1: Pose):
         i=0
@@ -324,7 +338,29 @@ class PathPlanner(Node):
             return False
         else:
             return True                                                
-                                                    
+
+    def check_rrt_vortex2(self, p0, p1, num_points):
+        x0 = p0[0]
+        y0 = p0[1]
+        x1 = p1[0]
+        y1 = p1[1]
+        x_list = np.linspace(x0, x1, num_points)
+        y_list = np.linspace(y0, y1, num_points)
+        matrix_point_list = list()
+        for i in range(num_points):
+            matrix_point_list.append(world_to_matrix(x_list[i], y_list[i], self.cell_size))
+        if len(self.has_collisions(matrix_point_list)) != 0:
+            return True
+        else:
+            return False
+        
+    def check_rrt_point(self, p0):
+        p_matrix = world_to_matrix(p0[0], p0[1], self.cell_size)
+        if len(self.has_collisions([p_matrix])) != 0:
+            return True
+        else:
+            return False
+
     def distance_rrt(self, p0, p1):
         return np.sqrt((p0[0]-p1[0])**2 + (p0[1]-p1[1])**2)
     
@@ -335,21 +371,35 @@ class PathPlanner(Node):
                 neighbors.append(candidate)
         return neighbors
 
+    def rrt_update_cost(self, parent, children_list, children_list_global, cost_to_node_list, node_list, delta_cost):
+        parent_index = node_list.index(parent)
+        cost_to_node_list[parent_index] -= delta_cost
+        if len(children_list) == 0: 
+            return
+        for child in children_list:
+            new_children_list = children_list_global[node_list.index(child)]
+            self.rrt_update_cost(child, new_children_list, children_list_global, cost_to_node_list, node_list, delta_cost) 
+        
+
     def compute_rrt_star_segment(self, p0: Pose, p1: Pose):
         p_start = [p0.position.x, p0.position.y]
         p_finish = [p1.position.x, p1.position.y]
         node_list = [p_start]
         predecessor_list = [None]
         cost_to_node_list = [0]
-        iterations = 600
-        radius = 0.3
+        iterations = 100  #600
+        radius = 1.0      #0.3
         i=0
-        max_distance_to_goal = 0.15
+        loop_iterations = 0
+        max_distance_to_goal = 0.4    #0.15
         current_distance_to_goal = np.inf#######
         goal_reached = False
         path_list = []
         while i < iterations:
+            loop_iterations+=1
             candidate = [uniform(0.05, 1.95), uniform(0.05, 3.95)]
+            if self.check_rrt_point(candidate) == True:
+                continue
             neighbors = self.neighbors_rrt(radius, candidate, node_list)
             if len(neighbors) == 0:
                 continue
@@ -357,7 +407,8 @@ class PathPlanner(Node):
             for k, possible_parent in enumerate(neighbors):
                 current_weight = cost_to_node_list[node_list.index(possible_parent)] + self.distance_rrt(possible_parent, candidate)
                 if current_weight < current_parent_and_distance[1]:
-                    if self.check_rrt_vortex_for_collision(candidate, possible_parent) == False:
+                    #if self.check_rrt_vortex_for_collision(candidate, possible_parent) == False:
+                    if self.check_rrt_vortex2(candidate, possible_parent, 20) == False:
                         current_parent_and_distance = [possible_parent, current_weight]  
                     else:
                         continue
@@ -367,30 +418,37 @@ class PathPlanner(Node):
             predecessor_list.append(current_parent_and_distance[0])
             cost_to_node_list.append(current_parent_and_distance[1])
             for to_be_improved in neighbors:
+                index_of_to_be_improved = node_list.index(to_be_improved)
                 new_cost = cost_to_node_list[-1] + self.distance_rrt(candidate, to_be_improved)
-                if new_cost < cost_to_node_list[node_list.index(to_be_improved)]:
-                    if self.check_rrt_vortex_for_collision(candidate, to_be_improved) == False:
-                        predecessor_list[node_list.index(to_be_improved)] = candidate
-                        cost_to_node_list[node_list.index(to_be_improved)] = new_cost
+                if new_cost < cost_to_node_list[index_of_to_be_improved]:
+                    #if self.check_rrt_vortex_for_collision(candidate, to_be_improved) == False:
+                    if self.check_rrt_vortex2(candidate, to_be_improved, 20) == False:
+                        predecessor_list[index_of_to_be_improved] = candidate
+                        cost_to_node_list[index_of_to_be_improved] = new_cost
                     else:
                         continue
             candidate_distance_to_goal = self.distance_rrt(candidate, p_finish)
-            if candidate_distance_to_goal < max_distance_to_goal and candidate_distance_to_goal< current_distance_to_goal:
+            if candidate_distance_to_goal < max_distance_to_goal and candidate_distance_to_goal< current_distance_to_goal\
+                and self.check_rrt_vortex2(candidate, p_finish, 20) == False:
+                #and self.check_rrt_vortex_for_collision(candidate, p_finish) == False:
+                
+                
                 goal_reached = True
                 goal_coordinates = candidate
                 current_distance_to_goal = candidate_distance_to_goal
             i+=1
+        current_path_length = cost_to_node_list[node_list.index(goal_coordinates)]
             
         if goal_reached == False:
-            self.get_logger().info('Goal not found')
+            #self.get_logger().info('Goal not found')
             return 0
         node_to_be_added = goal_coordinates
         while not p_start in path_list:
             path_list.insert(0, node_to_be_added)
             node_to_be_added = predecessor_list[node_list.index(node_to_be_added)]
         xy_3d = path_list
-        self.get_logger().info('at important point')
-        self.get_logger().info(f'p0: {p_start}, p1: {p1}, list: {xy_3d}')
+        #self.get_logger().info('at important point')
+        #elf.get_logger().info(f'p0: {p_start}, p1: {p1}, list: {xy_3d}')
         
         if len(xy_3d) == 1:
             xy_3d.append(xy_3d[0])
@@ -427,6 +485,8 @@ class PathPlanner(Node):
                         ] * len(points_3d)
         q = quaternion_from_euler(0.0, 0.0, yaw1)
         orientations[-1] = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+        self.get_logger().info(f'path length = {current_path_length}')
+        self.get_logger().info(f'loop iterations: {loop_iterations}')
 
         path = Path()
         header = Header()
@@ -437,10 +497,428 @@ class PathPlanner(Node):
             for p, q in zip(points_3d, orientations)
         ]
         #self.get_logger().info('almost done')
-        return {'path': path, 'collision_indices': []}
-
-
+        return [{'path': path, 'collision_indices': []}, current_path_length]
             
+    def compute_rrt_star_segment2(self, p0: Pose, p1: Pose):
+        p_start = [p0.position.x, p0.position.y]
+        p_finish = [p1.position.x, p1.position.y]
+        node_list = [p_start]
+        predecessor_list = [None]
+        cost_to_node_list = [0]
+        iterations = 100  #600
+        radius = 1.0      #0.3
+        d = 0.9 * radius
+        i=0
+        loop_iterations = 0
+        max_distance_to_goal = 0.4    #0.15
+        current_distance_to_goal = np.inf#######
+        goal_reached = False
+        path_list = []
+        while i < iterations:
+            loop_iterations+=1
+            candidate = [uniform(0.05, 1.95), uniform(0.05, 3.95)]
+            closest_node, distance_to_closest = self.find_nearest_rrt(candidate, node_list)
+            if distance_to_closest > d:
+                candidate = self.find_rrt_inbetween(closest_node, candidate, d)
+            if self.check_rrt_point(candidate) == True:
+                continue
+            neighbors = self.neighbors_rrt(radius, candidate, node_list)
+            if len(neighbors) == 0:
+                continue
+            current_parent_and_distance = [None, np.inf]
+            for k, possible_parent in enumerate(neighbors):
+                current_weight = cost_to_node_list[node_list.index(possible_parent)] + self.distance_rrt(possible_parent, candidate)
+                if current_weight < current_parent_and_distance[1]:
+                    #if self.check_rrt_vortex_for_collision(candidate, possible_parent) == False:
+                    if self.check_rrt_vortex2(candidate, possible_parent, 20) == False:
+                        current_parent_and_distance = [possible_parent, current_weight]  
+                    else:
+                        continue
+            if current_parent_and_distance[0] == None:
+                continue
+            node_list.append(candidate)
+            predecessor_list.append(current_parent_and_distance[0])
+            cost_to_node_list.append(current_parent_and_distance[1])
+            for to_be_improved in neighbors:
+                index_of_to_be_improved = node_list.index(to_be_improved)
+                new_cost = cost_to_node_list[-1] + self.distance_rrt(candidate, to_be_improved)
+                if new_cost < cost_to_node_list[index_of_to_be_improved]:
+                    #if self.check_rrt_vortex_for_collision(candidate, to_be_improved) == False:
+                    if self.check_rrt_vortex2(candidate, to_be_improved, 20) == False:
+                        predecessor_list[index_of_to_be_improved] = candidate
+                        cost_to_node_list[index_of_to_be_improved] = new_cost
+                    else:
+                        continue
+            candidate_distance_to_goal = self.distance_rrt(candidate, p_finish)
+            if candidate_distance_to_goal < max_distance_to_goal and candidate_distance_to_goal< current_distance_to_goal\
+                and self.check_rrt_vortex2(candidate, p_finish, 20) == False:
+                #and self.check_rrt_vortex_for_collision(candidate, p_finish) == False:
+                
+                
+                goal_reached = True
+                goal_coordinates = candidate
+                current_distance_to_goal = candidate_distance_to_goal
+            i+=1
+        current_path_length = cost_to_node_list[node_list.index(goal_coordinates)]
+            
+        if goal_reached == False:
+            #self.get_logger().info('Goal not found')
+            return 0
+        node_to_be_added = goal_coordinates
+        while not p_start in path_list:
+            path_list.insert(0, node_to_be_added)
+            node_to_be_added = predecessor_list[node_list.index(node_to_be_added)]
+        xy_3d = path_list
+        #self.get_logger().info('at important point')
+        #elf.get_logger().info(f'p0: {p_start}, p1: {p1}, list: {xy_3d}')
+        
+        if len(xy_3d) == 1:
+            xy_3d.append(xy_3d[0])
+
+        z0 = p0.position.z
+        z1 = p1.position.z
+        z_step = (z1 - z0) / (len(xy_3d) - 1)
+        points_3d = [
+            Point(x=p[0], y=p[1], z=z0 + i * z_step)
+            for i, p in enumerate(xy_3d)
+        ]
+        # Replace the last point with the exac value stored in p1.position
+        # instead of the grid map discretized world coordinate
+        points_3d[-1] = p1.position
+        # Now we have a waypoint path with the x and y component computed by
+        # our path finding algorithm and z is a linear interpolation between
+        # the z coordinate of the start and the goal pose.
+
+        # now we need to compute our desired heading (yaw angle) while we
+        # follow the waypoints. We choose a not-so-clever approach by
+        # keeping the yaw angle from our start pose and only set the yaw
+        # angle to the desired yaw angle from the goal pose for the very last
+        # waypoint
+        q0 = p0.orientation
+        _, _, yaw0 = euler_from_quaternion([q0.x, q0.y, q0.z, q0.w])
+        q1 = p1.orientation
+        _, _, yaw1 = euler_from_quaternion([q1.x, q1.y, q1.z, q1.w])
+
+        # replace the very last orientation with the orientation of our
+        # goal pose p1.
+        #q = quaternion_from_euler(0.0, 0.0, yaw0)
+        q = quaternion_from_euler(0.0, 0.0, yaw1)#yaw0
+        orientations = [Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+                        ] * len(points_3d)
+        q = quaternion_from_euler(0.0, 0.0, yaw1)
+        orientations[-1] = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+        self.get_logger().info(f'path length = {current_path_length}')
+        self.get_logger().info(f'loop iterations: {loop_iterations}')
+
+        path = Path()
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = 'map'
+        path.poses = [
+            PoseStamped(header=header, pose=Pose(position=p, orientation=q))
+            for p, q in zip(points_3d, orientations)
+        ]
+        #self.get_logger().info('almost done')
+        return [{'path': path, 'collision_indices': []}, current_path_length]
+
+    def compute_rrt_star_segment22(self, p0: Pose, p1: Pose):
+        #benötigte Funktionen:
+        #neighbors_rrt
+        #distance_rrt
+        #check_rrt_point
+        #check_rrt_vortex2
+        #find_rrt_inbetween
+        #find_nearest_rrt
+        p_start = [p0.position.x, p0.position.y]
+        p_finish = [p1.position.x, p1.position.y]
+        node_list = [p_start]
+        predecessor_list = [None]       #wichtig um später den Pfad zu rekonstruieren
+        global_children_list = [[]]     #wichtig um die Kostenfunktion upzudaten
+        cost_to_node_list = [0]
+        iterations = 100  #600
+        radius = 1.0      #0.3
+        d = 0.9 * radius
+        i=0
+        loop_iterations = 0
+        max_distance_to_goal = 0.4    #0.15
+        current_distance_to_goal = np.inf#######
+        goal_reached = False
+        path_list = []
+
+        while i < iterations:
+            loop_iterations+=1
+            candidate = [uniform(0.05, 1.95), uniform(0.05, 3.95)]
+            closest_node, distance_to_closest = self.find_nearest_rrt(candidate, node_list)
+
+            if distance_to_closest > d:
+                candidate = self.find_rrt_inbetween(closest_node, candidate, d)
+            #sorgt dafür, dass jeder Knoten mindestens einen Nachbarn hat, in dem der Knoten bei zu großer
+            #Entfernung zum nächsten Knoten an diesen "herangerückt" wird
+
+            if self.check_rrt_point(candidate) == True: #prüft, ob der neue Knoten in Obstacle ist
+                continue
+            neighbors = self.neighbors_rrt(radius, candidate, node_list)
+            if len(neighbors) == 0:    
+                continue
+            current_parent_and_distance = [None, np.inf]
+            
+            for k, possible_parent in enumerate(neighbors):
+                current_weight = cost_to_node_list[node_list.index(possible_parent)] + self.distance_rrt(possible_parent, candidate)
+                if current_weight < current_parent_and_distance[1]:
+                    if self.check_rrt_vortex2(candidate, possible_parent, 20) == False:
+                        current_parent_and_distance = [possible_parent, current_weight]  
+                    else:
+                        continue  
+            #findet aus den Nachbarn den Knoten, der die Distanz zum Startknoten minimiert als Vorgänger
+
+            if current_parent_and_distance[0] == None:
+                continue
+            #jeder Knoten, der in die Liste kommt, soll einen Vorgänger haben
+
+            node_list.append(candidate)
+            predecessor_list.append(current_parent_and_distance[0])
+            cost_to_node_list.append(current_parent_and_distance[1])
+            global_children_list.append([])
+            global_children_list[node_list.index(current_parent_and_distance[0])].append(candidate)
+
+            for to_be_improved in neighbors:
+                index_of_to_be_improved = node_list.index(to_be_improved)
+                new_cost = cost_to_node_list[-1] + self.distance_rrt(candidate, to_be_improved)
+                if new_cost < cost_to_node_list[index_of_to_be_improved]:
+                    if self.check_rrt_vortex2(candidate, to_be_improved, 20) == False:
+                        delta_cost = cost_to_node_list[index_of_to_be_improved] - new_cost
+                        global_children_list[node_list.index(predecessor_list[index_of_to_be_improved])].remove(to_be_improved)
+                        global_children_list[-1].append(to_be_improved)
+                        predecessor_list[index_of_to_be_improved] = candidate
+                        self.rrt_update_cost(to_be_improved, global_children_list[index_of_to_be_improved], global_children_list, cost_to_node_list, node_list, delta_cost)
+                    else:
+                        continue
+            #prüft für die Nachbarknoten, ob der neue Knoten ein besserer Vorgänger wäre, indem geschaut wird, 
+            #ob die Kostenfunktion mit dem neuen Knoten als Vorgänger kleiner ist als die aktueller Kostenfunktion 
+            #und ob die Kante nicht durch Obstacles geht. Dann wird der neue Knoten als Vorgänger gesetzt, beim neuen Knoten
+            #der Nachbar als Nachfolger hinzugefügt und beim vorherigen Vorgänger der Nachbar als Nachfolger enfernt. 
+            #Die Kostenfunktion des Nachbarn wird rekursiv geupdated(der Knoten selbst und die Nachfoler, die Nachfolger 
+            #der Nachfolger usw. )
+
+            candidate_distance_to_goal = self.distance_rrt(candidate, p_finish)
+            if candidate_distance_to_goal < max_distance_to_goal and candidate_distance_to_goal< current_distance_to_goal\
+                and self.check_rrt_vortex2(candidate, p_finish, 20) == False:
+                goal_coordinates = candidate
+                current_distance_to_goal = candidate_distance_to_goal
+                goal_reached = True
+            #ein Knoten, der eine Maximaldistanz zum Ziel unterschreitet, näher dran ist als ein evtl. vorher gefundener
+            #vorletzter Knoten und dessen Kante zum Ziel nicht durch Obstacles geht wird als neuer vorletzter markiert
+
+            i+=1
+        current_path_length = cost_to_node_list[node_list.index(goal_coordinates)] + self.distance_rrt(goal_coordinates, p_finish)
+            
+        if goal_reached == False:
+            self.get_logger().info('Goal not found')
+            return 0
+        
+        node_to_be_added = goal_coordinates
+        while not p_start in path_list:
+            path_list.insert(0, node_to_be_added)
+            node_to_be_added = predecessor_list[node_list.index(node_to_be_added)]
+        #Es wird der vorletzte Knoten eingefügt und dann immer am Anfang der Liste der Vorgänger, bis der Startknoten erreicht ist
+
+        xy_3d = path_list
+        
+        if len(xy_3d) == 1:
+            xy_3d.append(xy_3d[0])
+
+        z0 = p0.position.z
+        z1 = p1.position.z
+        z_step = (z1 - z0) / (len(xy_3d) - 1)
+        points_3d = [
+            Point(x=p[0], y=p[1], z=z0 + i * z_step)
+            for i, p in enumerate(xy_3d)
+        ]
+        # Replace the last point with the exac value stored in p1.position
+        # instead of the grid map discretized world coordinate
+        points_3d[-1] = p1.position
+        # Now we have a waypoint path with the x and y component computed by
+        # our path finding algorithm and z is a linear interpolation between
+        # the z coordinate of the start and the goal pose.
+
+        # now we need to compute our desired heading (yaw angle) while we
+        # follow the waypoints. We choose a not-so-clever approach by
+        # keeping the yaw angle from our start pose and only set the yaw
+        # angle to the desired yaw angle from the goal pose for the very last
+        # waypoint
+        q0 = p0.orientation
+        _, _, yaw0 = euler_from_quaternion([q0.x, q0.y, q0.z, q0.w])
+        q1 = p1.orientation
+        _, _, yaw1 = euler_from_quaternion([q1.x, q1.y, q1.z, q1.w])
+
+        # replace the very last orientation with the orientation of our
+        # goal pose p1.
+        #q = quaternion_from_euler(0.0, 0.0, yaw0)
+        q = quaternion_from_euler(0.0, 0.0, yaw1)#yaw0
+        orientations = [Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+                        ] * len(points_3d)
+        q = quaternion_from_euler(0.0, 0.0, yaw1)
+        orientations[-1] = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+        self.get_logger().info(f'path length = {current_path_length}')
+        self.get_logger().info(f'loop iterations: {loop_iterations}')
+
+        path = Path()
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = 'map'
+        path.poses = [
+            PoseStamped(header=header, pose=Pose(position=p, orientation=q))
+            for p, q in zip(points_3d, orientations)
+        ]
+        #self.get_logger().info('almost done')
+        return [{'path': path, 'collision_indices': []}, current_path_length]
+
+    def compute_rrt_star_segment3(self, p0: Pose, p1: Pose):
+        p_start = [p0.position.x, p0.position.y]
+        p_finish = [p1.position.x, p1.position.y]
+        node_list = [p_start]
+        predecessor_list = [None]
+        goal_coordinates = [None, None]
+        children_list_global = [[]]
+        cost_to_node_list = [0.0]
+        iterations = 100  #600
+        radius = 1.0      #0.3
+        i=0
+        loop_iterations = 0
+        max_distance_to_goal = 0.4    #0.15
+        current_distance_to_goal = np.inf#######
+        goal_reached = False
+        path_list = []
+        while i < iterations:
+            loop_iterations+=1
+            candidate = [uniform(0.05, 1.95), uniform(0.05, 3.95)]
+            if self.check_rrt_point(candidate) == True:
+                continue
+            closest_node, distance_to_closest = self.find_nearest_rrt(candidate, node_list)
+            provisional_parent = closest_node
+            closest_node_index = node_list.index(closest_node)
+            children_list_global.append([])
+            node_list.append(candidate)
+            if self.check_rrt_vortex2(candidate, provisional_parent, 20) == True:
+                predecessor_list.append(None)
+                cost_to_node_list.append(np.inf)
+            else:
+                predecessor_list.append(closest_node)
+                children_list_global[closest_node_index].append(candidate)
+                cost_to_provisional_parent = cost_to_node_list[node_list.index(closest_node)]
+                if cost_to_provisional_parent != np.inf:
+                    cost_to_node_list.append(cost_to_provisional_parent + distance_to_closest)
+                else:
+                    cost_to_node_list.append(np.inf)
+            
+            neighbors = self.neighbors_rrt(radius, candidate, node_list)
+            #if len(neighbors) == 0:
+             #   continue
+            current_parent_and_distance = [None, np.inf]
+            new_parent = False
+            for k, possible_parent in enumerate(neighbors):
+                current_weight = cost_to_node_list[node_list.index(possible_parent)] + self.distance_rrt(possible_parent, candidate)
+                if current_weight < current_parent_and_distance[1] and current_weight < cost_to_node_list[-1]:
+                    #if self.check_rrt_vortex_for_collision(candidate, possible_parent) == False:
+                    if self.check_rrt_vortex2(candidate, possible_parent, 20) == False:
+                        current_parent_and_distance = [possible_parent, current_weight]
+                        new_parent = True  
+                    else:
+                        continue
+            #if current_parent_and_distance[0] == None:
+             #   continue
+            if new_parent == True:
+                if predecessor_list[-1] != None:
+                    children_list_global[node_list.index(predecessor_list[-1])].remove(candidate)
+                predecessor_list[-1] = current_parent_and_distance[0]
+                children_list_global[node_list.index(predecessor_list[-1])].append(candidate)
+                cost_to_node_list[-1] = current_parent_and_distance[1]
+            for to_be_improved in neighbors:
+                index_of_to_be_improved = node_list.index(to_be_improved)
+                new_cost = cost_to_node_list[-1] + self.distance_rrt(candidate, to_be_improved)
+                if new_cost < cost_to_node_list[index_of_to_be_improved]:
+                    #if self.check_rrt_vortex_for_collision(candidate, to_be_improved) == False:
+                    if self.check_rrt_vortex2(candidate, to_be_improved, 20) == False:
+                        delta_cost = cost_to_node_list[index_of_to_be_improved] - new_cost
+                        if predecessor_list[index_of_to_be_improved] != None:
+                            children_list_global[node_list.index(predecessor_list[index_of_to_be_improved])].remove(to_be_improved)
+                        predecessor_list[index_of_to_be_improved] = candidate
+                        children_list_global[-1].append(to_be_improved)
+                        self.rrt_update_cost(to_be_improved, children_list_global[node_list.index(to_be_improved)], children_list_global, cost_to_node_list, node_list, delta_cost)
+                    else:
+                        continue
+            candidate_distance_to_goal = self.distance_rrt(candidate, p_finish)
+            if candidate_distance_to_goal < max_distance_to_goal and candidate_distance_to_goal< current_distance_to_goal\
+                and self.check_rrt_vortex2(candidate, p_finish, 20) == False and cost_to_node_list[-1] != np.inf:
+                #and self.check_rrt_vortex_for_collision(candidate, p_finish) == False:
+                
+                
+                goal_reached = True
+                goal_coordinates = candidate
+                current_distance_to_goal = candidate_distance_to_goal
+            i+=1
+        current_path_length = cost_to_node_list[node_list.index(goal_coordinates)]
+            
+        if goal_reached == False:
+            #self.get_logger().info('Goal not found')
+            return 0
+        node_to_be_added = goal_coordinates
+        while not p_start in path_list:
+            path_list.insert(0, node_to_be_added)
+            node_to_be_added = predecessor_list[node_list.index(node_to_be_added)]
+        xy_3d = path_list
+        #self.get_logger().info('at important point')
+        #elf.get_logger().info(f'p0: {p_start}, p1: {p1}, list: {xy_3d}')
+        
+        if len(xy_3d) == 1:
+            xy_3d.append(xy_3d[0])
+
+        z0 = p0.position.z
+        z1 = p1.position.z
+        z_step = (z1 - z0) / (len(xy_3d) - 1)
+        points_3d = [
+            Point(x=p[0], y=p[1], z=z0 + i * z_step)
+            for i, p in enumerate(xy_3d)
+        ]
+        # Replace the last point with the exac value stored in p1.position
+        # instead of the grid map discretized world coordinate
+        points_3d[-1] = p1.position
+        # Now we have a waypoint path with the x and y component computed by
+        # our path finding algorithm and z is a linear interpolation between
+        # the z coordinate of the start and the goal pose.
+
+        # now we need to compute our desired heading (yaw angle) while we
+        # follow the waypoints. We choose a not-so-clever approach by
+        # keeping the yaw angle from our start pose and only set the yaw
+        # angle to the desired yaw angle from the goal pose for the very last
+        # waypoint
+        q0 = p0.orientation
+        _, _, yaw0 = euler_from_quaternion([q0.x, q0.y, q0.z, q0.w])
+        q1 = p1.orientation
+        _, _, yaw1 = euler_from_quaternion([q1.x, q1.y, q1.z, q1.w])
+
+        # replace the very last orientation with the orientation of our
+        # goal pose p1.
+        #q = quaternion_from_euler(0.0, 0.0, yaw0)
+        q = quaternion_from_euler(0.0, 0.0, yaw1)#yaw0
+        orientations = [Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+                        ] * len(points_3d)
+        q = quaternion_from_euler(0.0, 0.0, yaw1)
+        orientations[-1] = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+        self.get_logger().info(f'path length = {current_path_length}')
+        self.get_logger().info(f'loop iterations: {loop_iterations}')
+
+        path = Path()
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = 'map'
+        path.poses = [
+            PoseStamped(header=header, pose=Pose(position=p, orientation=q))
+            for p, q in zip(points_3d, orientations)
+        ]
+        #self.get_logger().info('almost done')
+        return [{'path': path, 'collision_indices': []}, current_path_length]
+
     def compute_simple_path_segment(self,
                                     p0: Pose,
                                     p1: Pose,
@@ -617,8 +1095,8 @@ class PathPlanner(Node):
             # alternatively call your own implementation
             #segment = self.compute_a_star_segment(viewpoint_poses[i - 1],
              #                                     viewpoint_poses[i])
-            segment = self.compute_rrt_star_segment(viewpoint_poses[i-1],
-                                                    viewpoint_poses[i])
+            segment = self.compute_rrt_star_segment22(viewpoint_poses[i-1],
+                                                    viewpoint_poses[i])[0]
             path_segments.append(segment)
             #self.get_logger().info(f'seg {i}: {segment}')
         #self.get_logger().info(f'len path segments: {len(path_segments)}')
